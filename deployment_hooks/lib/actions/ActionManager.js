@@ -26,6 +26,9 @@ class ActionManager {
       };
       return execute;
     } catch (err) {
+      if (err.code !== 'MODULE_NOT_FOUND') {
+        throw err;
+      }
       const actionScriptAbsPath = path.join(__dirname, 'sh', `${action}_${phase}`);
       logger.info(`Script path... ${actionScriptAbsPath}`);
       if (fs.existsSync(actionScriptAbsPath)) {
