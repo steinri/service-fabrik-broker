@@ -98,6 +98,17 @@ class Agent extends HttpClient {
       });
   }
 
+  get(ip, pathname, expectedStatusCode) {
+    return this
+      .getUrl(ip, pathname)
+      .then(url => this.request({
+        method: 'GET',
+        url: url,
+        auth: this.auth
+      }, expectedStatusCode || CONST.HTTP_STATUS_CODE.OK))
+      .then(res => res.body);
+  }
+
   post(ip, pathname, body, expectedStatusCode, authObject) {
     return this
       .getUrl(ip, pathname)
@@ -198,6 +209,22 @@ class Agent extends HttpClient {
     return this
       .getHost(ips, 'lifecycle.preupdate')
       .then(ip => this.post(ip, 'lifecycle/preupdate', context, CONST.HTTP_STATUS_CODE.OK, agentCredsBeforeUpdate));
+  }
+
+  /**
+   * Poll the agent for lifecycle operations within the deployment
+   *
+   * @param ips The ip addresses of all available agents
+   * @param {string} eventType The current lifecycle event, supported values: "create", "update"
+   * @param {string} lifecycleState The current lifecycle state of the operation, supported values: "post"
+   * @returns {state} The response of the agent
+   */
+  polling(ips, eventType, lifecycleState) {
+    const featureName = `polling.${lifecycleState}${eventType}`; // TODO check feature name
+    const path = `polling/${lifecycleState}${eventType}`; // TODO check route
+    return this
+      .getHost(ips, featureName)
+      .then(ip => this.get(ip, path, CONST.HTTP_STATUS_CODE.OK));
   }
 
   createCredentials(ips, parameters, preBindResponse) {

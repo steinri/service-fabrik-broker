@@ -633,6 +633,52 @@ class DirectorService extends BaseDirectorService {
       });
   }
 
+  getAgentPostProcessingStatus(operationType, deploymentName) {
+    const featureName = {
+      'create': 'polling.postcreate', // TODO check feature names
+      'update': 'polling.postupdate'
+    }[operationType];
+    if (_.includes(this.agent.features, featureName)) {
+      return this
+        .getDeploymentIps(deploymentName)
+        .then(ips => this.agent.polling(ips, operationType, 'post'))
+        .then(res => {
+          let state;
+          switch (res.state) {
+            case 'succeeded':
+              state = CONST.APISERVER.RESOURCE_STATE.SUCCEEDED;
+              break;
+            case 'processing':
+              state = CONST.APISERVER.RESOURCE_STATE.POST_PROCESSING;
+              break;
+            case 'failed':
+            default:
+              state = CONST.APISERVER.RESOURCE_STATE.FAILED;
+              break;
+          }
+          return {
+            state
+          };
+        })
+        .catch(FeatureNotSupportedByAnyAgent, err => {
+          logger.debug('+-> Caught expected error of feature \'postprocessing\':', err);
+          return {
+            state: CONST.APISERVER.RESOURCE_STATE.SUCCEEDED
+          };
+        })
+        .catch(err => {
+          logger.error('Error occurred while querying agent of feature \'postprocessing\':', err);
+          return {
+            state: CONST.APISERVER.RESOURCE_STATE.FAILED
+          };
+        });
+    } else {
+      return Promise.resolve({
+        state: CONST.APISERVER.RESOURCE_STATE.SUCCEEDED
+      });
+    }
+  }
+
   getBoshTaskStatus(instanceId, operation, taskId) {
     return Promise
       .try(() => {
