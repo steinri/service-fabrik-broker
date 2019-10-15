@@ -124,9 +124,9 @@ exports.checkQuota = function () {
         } else {
           const quota = require('../../quota');
           const quotaManager = quota.quotaManager;
-          return quotaManager.checkQuota(orgId, req.body.plan_id, _.get(req, 'body.previous_values.plan_id'), req.method)
+          const plan = getPlanFromRequest(req);
+          return quotaManager.checkQuota(req, plan, orgId)
             .then(quotaValid => {
-              const plan = getPlanFromRequest(req);
               logger.debug(`quota api response : ${quotaValid}`);
               if (quotaValid === CONST.QUOTA_API_RESPONSE_CODES.NOT_ENTITLED) {
                 logger.error(`[QUOTA] Not entitled to create service instance: org '${req.body.organization_guid}', service '${plan.service.name}', plan '${plan.name}'`);

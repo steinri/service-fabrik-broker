@@ -4,16 +4,112 @@ const _ = require('lodash');
 const Promise = require('bluebird');
 const logger = require('../common/logger');
 const cf = require('../data-access-layer/cf');
+const eventmesh = require('../data-access-layer/eventmesh');
 const catalog = require('../common/models/catalog');
 const config = require('../common/config');
 const CONST = require('../common/constants');
+
+const errors = require('../common/errors');
+const BadRequest = errors.BadRequest;
+const Forbidden = errors.Forbidden;
+
+const QUOTA_CR = {
+  RESOURCE_GROUP: 'deployment.abap.ondemand.com',
+  RESOURCE_TYPE: 'instancequotas',
+  NAMESPACE: 'default',
+  API_VERSION: 'v1alpha1',
+};
 
 class QuotaManager {
   constructor(quotaAPIClient) {
     this.quotaAPIClient = quotaAPIClient;
   }
+  async checkQuota(req, plan, orgId) {
+    const quotaType = _.get(plan, 'quota.type');
+    switch (quotaType) {
+      case 'abap': {
+        const quotaOptions = _.get(plan, 'quota.options', {});
+        return this.checkQuotaAbap(req, quotaOptions, orgId)
+      }
+      case 'default': default: {
+        return this.checkQuotaDefault(orgId, req.body.plan_id, _.get(req, 'body.previous_values.plan_id'), req.method)
+      }
+    }
+  }
 
-  checkQuota(orgId, planId, previousPlanId, reqMethod) {
+  async checkQuotaAbap(req, quotaOptions, orgId) {
+    const quotaType = _.get(quotaOptions, 'quota_type', 'abap');
+    const quotaCodeAcu = _.get(quotaOptions, 'quota_codes.acu', 'runtime');
+    const quotaCodeHcu = _.get(quotaOptions, 'quota_codes.hcu', 'persistence');
+
+    const isUpdate = CONST.HTTP_METHOD.PATCH === req.method;
+
+    // TODO handle plan changes!!! -> throw error at the moment
+    if (isUpdate) {
+      const planId = req.body.plan_id;
+      const previousPlanId = _.get(req, 'body.previous_values.plan_id');
+      if (planId !== previousPlanId) {
+        throw new Forbidden(`Not supported to switch from plan ${previousPlanId} to plan ${planId}.`);
+      }
+    }
+
+    let requestedAcu = _.get(req, 'body.parameters.size_of_runtime');
+    let requestedHcu = _.get(req, 'body.parameters.size_of_persistence');
+    if (!isUpdate && (!requestedAcu || !requestedHcu)) {
+      throw new BadRequest(`The parameters size_of_runtime and size_of_persistence must be provided, but are missing.`);
+    }
+
+    const loadingQuotaResourceOfInstance = (isUpdate) ? eventmesh.apiServerClient.getResource({
+      resourceGroup: QUOTA_CR.RESOURCE_GROUP,
+      resourceType: QUOTA_CR.RESOURCE_TYPE,
+      resourceId: req.params.instance_id,
+      namespaceId: 'default',
+    }) : Promise.resolve({});
+
+    const [allowedAcu, allowedHcu, quotaResourcesOfSubaccount, quotaResourceOfInstance] = await Promise.all([
+      this.quotaAPIClient.getQuota(orgId, quotaType, quotaCodeAcu),
+      this.quotaAPIClient.getQuota(orgId, quotaType, quotaCodeHcu),
+      eventmesh.apiServerClient.getResources({
+        resourceGroup: QUOTA_CR.RESOURCE_GROUP,
+        resourceType: QUOTA_CR.RESOURCE_TYPE,
+        namespaceId: 'default',
+        query: {
+          labelSelector: `abap.ondemand.com/organizationId=${orgId}`,
+        }
+      }),
+      loadingQuotaResourceOfInstance,
+    ]);
+
+    const consumedAcu = quotaResourcesOfSubaccount.reduce((acc, val) => acc + _.get(val, 'spec.acu', 0), 0);
+    const consumedHcu = quotaResourcesOfSubaccount.reduce((acc, val) => acc + _.get(val, 'spec.hcu', 0), 0);
+
+    const consumedAcuOfInstance = (isUpdate) ? _.get(quotaResourceOfInstance, 'spec.acu', 0) : 0;
+    const consumedHcuOfInstance = (isUpdate) ? _.get(quotaResourceOfInstance, 'spec.hcu', 0) : 0;
+
+    // in the update case take the acu and hcu from the existing instance if they are not given
+    if (isUpdate) {
+      if (!requestedAcu) {
+        requestedAcu = consumedAcuOfInstance;
+      }
+      if (!requestedHcu) {
+        requestedHcu = consumedHcuOfInstance;
+      }
+    }
+
+    logger.debug(`ACU: requested: ${requestedAcu}, consumed: ${consumedAcu}, allowed: ${allowedAcu}`);
+    logger.debug(`HCU: requested: ${requestedHcu}, consumed: ${consumedHcu}, allowed: ${allowedHcu}`);
+
+    if (consumedAcu + requestedAcu - consumedAcuOfInstance > allowedAcu || consumedHcu + requestedHcu - consumedHcuOfInstance > allowedHcu) {
+      const message = isUpdate
+        ? `Quota is not sufficient for this request.\n\tRuntime - requested: change ${consumedAcuOfInstance} to ${requestedAcu}, currently used: ${consumedAcu}, limit: ${allowedAcu};\n\tPersistence - requested:  change ${consumedHcuOfInstance} to ${requestedHcu}, currently used: ${consumedHcu}, limit: ${allowedHcu}`
+        : `Quota is not sufficient for this request.\n\tRuntime - requested: ${requestedAcu}, currently used: ${consumedAcu}, limit: ${allowedAcu};\n\tPersistence - requested: ${requestedHcu}, currently used: ${consumedHcu}, limit: ${allowedHcu}`;
+      throw new Forbidden(message);
+    }
+
+    return CONST.QUOTA_API_RESPONSE_CODES.VALID_QUOTA;
+  }
+
+  checkQuotaDefault(orgId, planId, previousPlanId, reqMethod) {
     return Promise.try(() => {
       if (CONST.HTTP_METHOD.PATCH === reqMethod && this.isSamePlanOrSkuUpdate(planId, previousPlanId)) {
         logger.debug('Quota check skipped as it is a normal instance update or plan update with same sku.');
