@@ -38,20 +38,17 @@ class QuotaManager {
   }
 
   async checkQuotaAbap(req, quotaOptions, orgId) {
-    const quotaType = _.get(quotaOptions, 'quota_type', 'abap');
-    const quotaCodeAcu = _.get(quotaOptions, 'quota_codes.acu', 'runtime');
-    const quotaCodeHcu = _.get(quotaOptions, 'quota_codes.hcu', 'persistence');
+    const quotaType = 'abap';
+    const quotaCodeAcu = 'abap_compute_unit';
+    const quotaCodeHcu = 'hana_compute_unit';
 
     const isUpdate = CONST.HTTP_METHOD.PATCH === req.method;
 
-    // TODO handle plan changes!!! -> throw error at the moment
-    if (isUpdate) {
-      const planId = req.body.plan_id;
-      const previousPlanId = _.get(req, 'body.previous_values.plan_id');
-      if (planId !== previousPlanId) {
-        throw new Forbidden(`Not supported to switch from plan ${previousPlanId} to plan ${planId}.`);
-      }
-    }
+    const planId = req.body.plan_id;
+    const plan = _.find(catalog.plans, ['id', planId]);
+    const managerContext = _.get(plan, 'manager.settings.context', {});
+    // TODO verify that no special handling for plan changes is necessary
+    // const isPlanChange = isUpdate && planId !== _.get(req, 'body.previous_values.plan_id');
 
     let requestedAcu = _.get(req, 'body.parameters.size_of_runtime');
     let requestedHcu = _.get(req, 'body.parameters.size_of_persistence');
@@ -94,10 +91,24 @@ class QuotaManager {
       if (!requestedHcu) {
         requestedHcu = consumedHcuOfInstance;
       }
+      // hcu changes are not possible at the moment!
+      if (requestedHcu !== consumedHcuOfInstance) {
+        throw new BadRequest(`Not allowed to change size_of_persistence, requested: ${requestedHcu}, used: ${consumedHcuOfInstance}`);
+      }
     }
 
     logger.debug(`ACU: requested: ${requestedAcu}, consumed: ${consumedAcu}, allowed: ${allowedAcu}`);
     logger.debug(`HCU: requested: ${requestedHcu}, consumed: ${consumedHcu}, allowed: ${allowedHcu}`);
+
+    // verify that the request acu and hcu is valid
+    const validAcus = _.get(managerContext, 'valid_acus', null);
+    const validHcus = _.get(managerContext, 'valid_hcus', null);
+    if (validAcus && !_.includes(validAcus, requestedAcu)) {
+      throw new BadRequest(`The requested size_of_runtime is not valid for this service plan, requested: ${requestedAcu}, valid values are ${JSON.stringify(validAcus)}`);
+    }
+    if (validHcus && !_.includes(validHcus, requestedHcu)) {
+      throw new BadRequest(`The requested size_of_persistence is not valid for this service plan, requested: ${requestedHcu}, valid values are ${JSON.stringify(validHcus)}`);
+    }
 
     if (consumedAcu + requestedAcu - consumedAcuOfInstance > allowedAcu || consumedHcu + requestedHcu - consumedHcuOfInstance > allowedHcu) {
       const message = isUpdate
