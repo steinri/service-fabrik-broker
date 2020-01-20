@@ -50,8 +50,17 @@ class QuotaManager {
     // TODO verify that no special handling for plan changes is necessary
     // const isPlanChange = isUpdate && planId !== _.get(req, 'body.previous_values.plan_id');
 
-    let requestedAcu = _.get(req, 'body.parameters.size_of_runtime');
-    let requestedHcu = _.get(req, 'body.parameters.size_of_persistence');
+    let requestedAcu;
+    let requestedHcu;
+    // use static_compute_units to allow handling of old plans, i.e. 16_abap_64_db
+    // otherwise get the sizes from the parameters
+    if (_.get(quotaOptions, 'static_compute_units', false)) {
+      requestedAcu = _.get(quotaOptions, 'plan_acu', 1);
+      requestedHcu = _.get(quotaOptions, 'plan_hcu', 4);
+    } else {
+      requestedAcu = _.get(req, 'body.parameters.size_of_runtime');
+      requestedHcu = _.get(req, 'body.parameters.size_of_persistence');
+    }
     if (!isUpdate && (!requestedAcu || !requestedHcu)) {
       throw new BadRequest(`The parameters size_of_runtime and size_of_persistence must be provided, but are missing.`);
     }
