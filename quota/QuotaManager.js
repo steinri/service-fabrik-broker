@@ -48,7 +48,8 @@ class QuotaManager {
     const plan = _.find(catalog.plans, ['id', planId]);
     const managerContext = _.get(plan, 'manager.settings.context', {});
     // TODO verify that no special handling for plan changes is necessary
-    // const isPlanChange = isUpdate && planId !== _.get(req, 'body.previous_values.plan_id');
+    let previousPlanId = _.get(req, 'body.previous_values.plan_id');
+    const isPlanChange = isUpdate && planId !== previousPlanId;
 
     let requestedAcu;
     let requestedHcu;
@@ -70,6 +71,18 @@ class QuotaManager {
       resourceType: QUOTA_CR.RESOURCE_TYPE,
       resourceId: req.params.instance_id,
       namespaceId: 'default',
+    }).catch(err => {
+      if (isPlanChange) {
+        logger.error(err);
+        // mimic plan change checks
+        const previousPlan = _.find(plan.service.plans, ['id', previousPlanId]);
+        const isUpdatePossible = _.includes(plan.manager.settings.update_predecessors, previousPlan.id);
+        if (!isUpdatePossible) {
+          throw new BadRequest(`Update to plan '${plan.name}' is not possible`);
+        }
+        throw new Error(`Changing the service plan to ${plan.name} to is currently not possible. Please try again later`);
+      }
+      throw err;
     }) : Promise.resolve({});
 
     const [allowedAcu, allowedHcu, quotaResourcesOfSubaccount, quotaResourceOfInstance] = await Promise.all([
